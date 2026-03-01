@@ -1,4 +1,4 @@
-Rental Real Estate Data Pipeline in Vietnam
+# Rental Real Estate Data Pipeline in Vietnam
 This repository focuses on the Data Engineering core of the project. It handles the end-to-end ELT process: from crawling rental listings across various websites to processing and storing them in a structured format for AI-powered querying.
 
 🏗️ Architecture Overview

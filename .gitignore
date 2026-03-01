@@ -1,0 +1,16 @@
+__pycache__
+testing
+minio-data
+*.html
+*.jsonl
+*.log
+*.txt
+*.csv
+.env
+*.pid
+n8n-entrypoint.sh
+*.conf
+package-lock.json
+qdrant_storage 
+node_modules
+airflow-webserver.pid

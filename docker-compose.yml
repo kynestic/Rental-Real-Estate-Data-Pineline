@@ -1,0 +1,149 @@
+version: "3.8"
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: rabbitmq
+    command: rabbitmq-server
+    ports:
+      - "5672:5672"    # AMQP port (ứng dụng kết nối)
+      - "15672:15672"  # Web UI quản trị
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    volumes:
+      - ./minio-data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"   # S3 endpoint
+      - "9001:9001"   # Web console
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  # Cài đặt pyspark
+  # pyspark:
+  #   build: .
+  #   container_name: pyspark_delta
+  #   ports:
+  #     - "8888:8888" # Cổng vào JupyterLab
+  #     - "4040:4040" # Cổng vào Spark UI (theo dõi job)
+  #   volumes:
+  #     - ./work:/home/jovyan/work # Map thư mục code ra ngoài máy thật
+  #   environment:
+  #     - JUPYTER_ENABLE_LAB=yes
+  #     - GRANT_SUDO=yes
+
+  # Dịch vụ N8N
+  
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"   # HTTP API (n8n dùng cổng này)
+      - "6334:6334"   # GRPC (Dành cho hiệu năng cao nếu cần)
+    environment:
+      # --- CẤU HÌNH QUẢN LÝ MEMORY & STORAGE ---
+      
+      # 1. Ép dùng Đĩa thay vì RAM (quan trọng để tránh OOM)
+      # Mặc định Qdrant sẽ cố load index vào RAM. 
+      # Đặt ngưỡng thấp (vd: 20kb) để ép nó dùng mmap (đọc từ đĩa) cho hầu hết vector.
+      - QDRANT__STORAGE__MMAP_THRESHOLD=0kb
+      
+      # 2. Giới hạn số lượng Segment tối ưu hóa (tránh tốn CPU đột ngột)
+      - QDRANT__STORAGE__OPTIMIZER__DEFAULT_SEGMENT_NUMBER=4
+      
+      # 3. Bật xác nhận ghi dữ liệu (WAL) để tránh mất data khi mất điện
+      - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=32
+      - QDRANT__STORAGE__WAL__WAL_SEGMENTS_AHEAD=0
+    volumes:
+      - ./qdrant_storage:/qdrant/storage # Lưu trữ dữ liệu bền vững
+  nginx:
+    image: nginx:alpine
+    restart: always
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - n8n
+    # Nginx này chỉ nói chuyện với Ngrok và n8n trong mạng nội bộ Docker
+    # Không cần expose port ra máy tính của bạn
+
+  # 3. NGROK - Đường hầm ra Internet
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    command:
+      - "http"
+      - "--domain=${NGROK_DOMAIN}" # Dùng tên miền cố định
+      - "nginx:80" # Trỏ vào Nginx (CHỨ KHÔNG PHẢI n8n)
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    depends_on:
+      - nginx
+
+  n8n:
+    build: .
+    container_name: n8n_app
+    restart: unless-stopped
+    ports:
+      - "5678:5678" # Cổng cục bộ cho n8n
+    environment:
+      - N8N_HOST=${NGROK_DOMAIN}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://${NGROK_DOMAIN}/
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
+      # Tắt chế độ thu thập dữ liệu (tùy chọn)
+      - N8N_DIAGNOSTICS_ENABLED=false
+    depends_on:
+      - qdrant
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # 👇 THÊM DÒNG NÀY ĐỂ MOUNT CODE
+      - ./n8n_scripts:/data_scripts
+
+  postgres:
+    image: postgres:13
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+  airflow:
+    # 1. Thay đổi từ image sang build
+    build:
+      context: ./airflow
+    image: custom-airflow-datn:latest
+    
+    # Giữ nguyên phần này
+    user: "${AIRFLOW_UID:-50000}:0"
+    volumes:
+      - .:/opt/airflow 
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    environment:
+      - PYTHONPATH=/opt/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - _AIRFLOW_WWW_USER_CREATE=True
+      - _AIRFLOW_WWW_USER_USERNAME=admin
+      - _AIRFLOW_WWW_USER_PASSWORD=admin
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      # Đảm bảo kết nối DB đủ mạnh (LocalExecutor cần Postgres/MySQL, không dùng SQLite)
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      # 2. ĐÃ XÓA _PIP_ADDITIONAL_REQUIREMENTS (vì đã cài trong Dockerfile)
+
+    command: bash -c "airflow db init && (airflow webserver & airflow scheduler)"
+volumes:
+  n8n_data:

@@ -66,7 +66,7 @@ def get_logger(name, log_file="system.log"):
 
         # 3. Telegram Handler (THAY ID CỦA BẠN VÀO ĐÂY)
         bot_token = "8264995tptFvAw"
-        my_chat_id = "7259510958" 
+        my_chat_id = "5464654658" 
         
         tele_handler = TelegramHandler(bot_token, my_chat_id)
         tele_handler.setFormatter(formatter)
